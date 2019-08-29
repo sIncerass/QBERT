@@ -1,0 +1,1 @@
+{"bert_model": "bert-base-cased", "do_lower": false, "max_seq_length": 128, "num_labels": 12, "label_map": {"1": "O", "2": "B-MISC", "3": "I-MISC", "4": "B-PER", "5": "I-PER", "6": "B-ORG", "7": "I-ORG", "8": "B-LOC", "9": "I-LOC", "10": "[CLS]", "11": "[SEP]"}}
