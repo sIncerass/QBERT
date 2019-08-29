@@ -185,11 +185,25 @@ def main():
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
-        all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-        all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+        all_input_ids = torch.tensor(
+            [f.input_ids for f in train_features], dtype=torch.long)
+        all_input_mask = torch.tensor(
+            [f.input_mask for f in train_features], dtype=torch.long)
+        all_segment_ids = torch.tensor(
+            [f.segment_ids for f in train_features], dtype=torch.long)
+        all_label_ids = torch.tensor(
+            [f.label_id for f in train_features], dtype=torch.long)
+        all_valid_ids = torch.tensor(
+            [f.valid_ids for f in train_features], dtype=torch.long)
+        all_lmask_ids = torch.tensor(
+            [f.label_mask for f in train_features], dtype=torch.long)
+        train_data = TensorDataset(
+            all_input_ids,
+            all_input_mask,
+            all_segment_ids,
+            all_label_ids,
+            all_valid_ids,
+            all_lmask_ids)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -200,10 +214,14 @@ def main():
         def get_loss(batch):
             batch = tuple(t.to(device) for t in batch)
 
-            input_ids, input_mask, segment_ids, label_ids = batch
-
-            # define a new function to compute loss values for both output_modes
-            loss = model(input_ids, segment_ids, input_mask, label_ids)
+            input_ids, input_mask, segment_ids, label_ids, valid_ids, l_mask = batch
+            loss = model(
+                    input_ids,
+                    segment_ids,
+                    input_mask,
+                    label_ids,
+                    valid_ids,
+                    l_mask)
 
             if n_gpu > 1:
                 loss = loss.mean() # mean() to average on multi-gpu.
