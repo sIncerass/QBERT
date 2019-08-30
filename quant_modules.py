@@ -14,6 +14,7 @@ import time
 # Activation 8-bit
 ACT_QUANT_BITS_MAP = {1:8, 2:8, 3:8, 4:8, 5:8, 6:8, 7:8, 8:8, 32:8}
 
+
 class QuantEmbedding(_Embedding):
     """docstring for QuantEmbedding"""
     def __init__(self, 
@@ -28,12 +29,40 @@ class QuantEmbedding(_Embedding):
                  _weight=None, 
                  weight_bit=8,
                  full_precision_flag=True,
-                 quant_mode="asymmetric"):
+                 quant_mode="asymmetric",
+                 alpha=None,
+                 per_channel=True,
+                 group_quantization=True,
+                 group_number=1,
+                 weight_percentile=False):
+
         super(QuantEmbedding, self).__init__(num_embeddings, embedding_dim, padding_idx,
                  max_norm, norm_type, scale_grad_by_freq,
                  sparse, _weight)
+
         self.full_precision_flag = full_precision_flag
         self.weight_bit = weight_bit
+        self.alpha = alpha
+        self.quant_mode = quant_mode
+        self.input_size = num_embeddings
+        self.output_size = embedding_dim
+        self.momentum = 0.99
+
+        # self.x_min = torch.zeros(1)
+        # self.x_max = torch.zeros(1)
+        # if not per_channel:
+        self.register_buffer('x_min', torch.zeros(1))
+        self.register_buffer('x_max', torch.zeros(1))
+        # else:
+        #    self.register_buffer('x_min', torch.zeros(input_size))
+        #    `self.register_buffer('x_max', torch.zeros(input_size))
+
+        self.per_channel = per_channel
+
+        self.weight_percentile = weight_percentile
+
+        self.group_quantization = group_quantization
+        self.group_number = group_number
 
         if quant_mode == "symmetric":
             self.weight_function = SymmetricQuantFunction.apply
@@ -41,6 +70,7 @@ class QuantEmbedding(_Embedding):
             self.weight_function = AsymmetricQuantFunction.apply
         else:
             raise ValueError("unknown quant mode: {}".format(quant_mode))
+
     def __repr__(self):
         s = super(QuantEmbedding, self).__repr__()
         s.replace(
@@ -53,15 +83,170 @@ class QuantEmbedding(_Embedding):
         self.full_precision_flag = False
         self.weight_bit = weight_bit
 
-    def forward(self, input):
+    def forward(self, x):
+        # print(x.shape)
+        w = self.weight
+        self.channel_num = w.shape[1]
+        # print("w shape:", w.shape)
+
+        if self.per_channel:
+            if not self.group_quantization:
+                # print(1, time.time())
+                # x_transform = w.data.transpose(0, 1).contiguous().view(self.channel_num, -1) # output_dim as channel
+                x_transform = w.data.transpose(0, 1).contiguous()
+                # print("x_transform, shape:", x_transform.shape)
+                w_min = x_transform.min(dim=1)[0]
+                w_max = x_transform.max(dim=1)[0]
+                # print("w_min shape:", w_min.shape)
+                # print("w_max shape:", w_max.shape)
+                # w_min = torch.zeros(self.channel_num).cuda()
+                # w_max = torch.zeros(self.channel_num).cuda()
+                # for i in range(self.channel_num):
+                #   w_min[i] = w.data[:, i, :, :].min()
+                #   w_max[i] = w.data[:, i, :, :].max()
+                # print(w_min)
+                # print(w_max)
+
+                if not self.weight_percentile:
+                    pass
+
+                elif self.weight_percentile:
+                    # print("percentile = ", self.percentile)
+                    lower_percentile = 0.1
+                    upper_percentile = 99.9
+                    input_length = x_transform[0].view(-1).shape[0]
+
+                    # print("self.channel_num = ", self.channel_num)
+                    # print("input_length = ", input_length)
+
+                    lower_index = round(input_length * lower_percentile * 0.01)
+                    upper_index = round(input_length * upper_percentile * 0.01)
+
+                    lower_bound, _ = torch.topk(x_transform, lower_index, largest=False, sorted=False)
+                    upper_bound, _ = torch.topk(x_transform, input_length - upper_index, largest=True, sorted=False)
+
+                    # print("lower_bound.shape = ", lower_bound.shape)
+                    # print("w_min shape:", w_min.shape)
+
+                    w_min = lower_bound.max(dim=1)[0]
+                    w_max = upper_bound.min(dim=1)[0]
+
+                    # print("w_min_new shape:", w_min.shape)
+
+                    # for i in range(self.channel_num):
+                    #     w_min[i], w_max[i] = get_percentile_min_max(
+                    #          x_transform[i].view(-1), 0.1, 99.9, output_tensor=True)
+
+            elif self.group_quantization:
+                x_transform = w.data.transpose(0, 1).contiguous()
+                # w_min = torch.zeros(x_transform.size()[0])
+                # w_max = torch.zeros(x_transform.size()[0])
+                w_min = x_transform.min(dim=1)[0]
+                w_max = x_transform.max(dim=1)[0]
+
+                # please make sure group_length is an integer
+                group_length = w_max.size()[0] // self.group_number
+
+                if not self.weight_percentile:
+                    temp_w_min = w_min.clone()
+                    temp_w_max = w_max.clone()
+                    # temp_w_min = x_transform.min(dim=1)[0]
+                    # temp_w_max = x_transform.max(dim=1)[0]
+
+                    for i in range(self.group_number):
+                        w_min[i * group_length: (i + 1) * group_length] = \
+                            temp_w_min[i * group_length: (i + 1) * group_length].min().repeat(group_length)
+                        w_max[i * group_length: (i + 1) * group_length] = \
+                            temp_w_max[i * group_length: (i + 1) * group_length].max().repeat(group_length)
+                        # print("shape = ", temp_w_max[i * group_length: (i + 1) * group_length].max().shape)
+                        # print("enlarged shape = ", temp_w_max[i * group_length: (i + 1) * group_length] \
+                        #       .max().repeat(group_length).shape)
+                        # if i == 1:
+                        #     print("w_max_1_2 = ", w_max[i * group_length: (i + 1) * group_length])
+
+                elif self.weight_percentile:
+                    # print("percentile = ", self.percentile)
+                    for i in range(self.group_number):
+                        temp_w_min, temp_w_max = get_percentile_min_max(x_transform
+                                [i * group_length: (i + 1) * group_length].view(-1), 0.1, 99.9, output_tensor=True)
+                        w_min[i * group_length: (i + 1) * group_length] = temp_w_min.repeat(group_length)
+                        w_max[i * group_length: (i + 1) * group_length] = temp_w_max.repeat(group_length)
+
+        elif not self.per_channel:
+            if not self.weight_percentile:
+                w_min = w.data.min().expand(1)
+                w_max = w.data.max().expand(1)
+            elif self.weight_percentile:
+                w_min, w_max = get_percentile_min_max(w.clone().view(-1), 0.1, 99.9)
+
+        # print("w_min: ", w_min)
+        # print("w_min size: ", w_min.size())
+
+        # Initialization
+        # if self.x_min.size()[0] == 3072:
+        #     print("self.x_max = ", self.x_max[7:11])
+
+        # print("self.x_min: ", self.x_min)
+        # print("self.x_min size: ", self.x_min.size())
+
+        if self.x_min.size()[0] == 1:
+            if self.x_min == self.x_max:
+                self.x_min = w_min
+                self.x_max = w_max
+
+            # print("True x_min = ", self.x_min[0:8])
+            # if self.per_channel:
+            #     self.x_min = self.x_min.expand(self.channel_num).cuda()
+            #     self.x_max = self.x_max.expand(self.channel_num).cuda()
+            # print(self.x_max)
+
+        # print("self.x_min 2: ", self.x_min)
+
+            # exponential moving average (EMA)
+            # use momentum to prevent the quantized values change greatly every
+            # iteration
+        self.x_min = self.momentum * self.x_min + (1. - self.momentum) * w_min
+        self.x_max = self.momentum * self.x_max + (1. - self.momentum) * w_max
+
+        # print("self.x_min 3: ", self.x_min)
+
+        # if self.x_min.size()[0] == 3072:
+        #     print("True self.x_max = ", self.x_max[7:11])
+        # print("True self.x_min size:", self.x_min.size())
         if not self.full_precision_flag:
-            w = self.weight_function(self.weight, self.weight_bit)
+            w = self.weight_function(self.weight, self.weight_bit, self.x_min,
+                                     self.x_max, self.per_channel, self.weight_percentile)
         else:
             w = self.weight
 
-        return F.embedding(
-            input, w, self.padding_idx, self.max_norm,
-            self.norm_type, self.scale_grad_by_freq, self.sparse)
+        # print("self.x_min 4: ", self.x_min)
+
+        if self.alpha is None:
+            return F.embedding(
+                x, w, self.padding_idx, self.max_norm,
+                self.norm_type, self.scale_grad_by_freq, self.sparse)
+        else:
+            assert self.full_precision_flag == False
+            # quantized = self.alpha * F.linear(x, w, bias=self.bias)
+            # non_quantized = (1 - self.alpha) * F.linear(
+            #     x, self.weight, bias=self.bias)
+            quantized = self.alpha * w
+            non_quantized = (1 - self.alpha) * self.weight
+
+            return F.embedding(
+                x, non_quantized + quantized, self.padding_idx, self.max_norm,
+                self.norm_type, self.scale_grad_by_freq, self.sparse)
+
+    # Original forward() of QuantEmbedding()
+    # def forward(self, input):
+    #     if not self.full_precision_flag:
+    #         w = self.weight_function(self.weight, self.weight_bit)
+    #     else:
+    #         w = self.weight
+    #
+    #     return F.embedding(
+    #         input, w, self.padding_idx, self.max_norm,
+    #         self.norm_type, self.scale_grad_by_freq, self.sparse)
         
 
 class QuantLinear(_linear):
@@ -72,8 +257,8 @@ class QuantLinear(_linear):
                  full_precision_flag=True,
                  quant_mode="asymmetric",
                  alpha=None,
-                 per_channel=False,
-                 group_quantization=False,
+                 per_channel=True,
+                 group_quantization=True,
                  group_number=1,
                  weight_percentile=False):
         # WARNING on alpha blending:
@@ -95,7 +280,7 @@ class QuantLinear(_linear):
         self.register_buffer('x_max', torch.zeros(1))
         #else:
         #    self.register_buffer('x_min', torch.zeros(input_size))
-        #    `self.register_buffer('x_max', torch.zeros(input_size))
+        #    self.register_buffer('x_max', torch.zeros(input_size))
 
         self.per_channel = per_channel
 
@@ -219,27 +404,35 @@ class QuantLinear(_linear):
 
         elif not self.per_channel:
             if not self.weight_percentile:
-                w_min = w.data.min()
-                w_max = w.data.max()
+                w_min = w.data.min().expand(1)
+                w_max = w.data.max().expand(1)
             elif self.weight_percentile:
                 w_min, w_max = get_percentile_min_max(w.clone().view(-1), 0.1, 99.9)
-        # print(self.w_min)
 
+        # print("w_min: ", w_min)
+        # print("w_min size: ", w_min.size())
 
         # Initialization
         # if self.x_min.size()[0] == 3072:
         #     print("self.x_max = ", self.x_max[7:11])
-        # print("self.x_min size:", self.x_min.size())
+        # print("self.x_min: ", self.x_min)
+        # print("self.x_min size: ", self.x_min.size())
+
         if self.x_min.size()[0] == 1:
+            # print("1")
             if self.x_min == self.x_max:
+                # print("2")
                 self.x_min = w_min
                 self.x_max = w_max
+                # print("w_min size: ", w_min.size())
+
             # print("True x_min = ", self.x_min[0:8])
             # if self.per_channel:
             #     self.x_min = self.x_min.expand(self.channel_num).cuda()
             #     self.x_max = self.x_max.expand(self.channel_num).cuda()
             # print(self.x_max)
 
+        # print("self.x_min 2: ", self.x_min)
 
             # exponential moving average (EMA)
             # use momentum to prevent the quantized values change greatly every
@@ -247,15 +440,18 @@ class QuantLinear(_linear):
         self.x_min = self.momentum * self.x_min + (1. - self.momentum) * w_min
         self.x_max = self.momentum * self.x_max + (1. - self.momentum) * w_max
 
+        # print("self.x_min 3: ", self.x_min)
 
         # if self.x_min.size()[0] == 3072:
         #     print("True self.x_max = ", self.x_max[7:11])
         # print("True self.x_min size:", self.x_min.size())
         if not self.full_precision_flag:
-            w = self.weight_function(self.weight, self.weight_bit, self.x_min, self.x_max,
-                                     self.per_channel, self.weight_percentile)
+            w = self.weight_function(self.weight, self.weight_bit, self.x_min,
+                                     self.x_max, self.per_channel, self.weight_percentile)
         else:
             w = self.weight
+
+        # print("self.x_min 4: ", self.x_min)
 
         if self.alpha is None:
             return F.linear(x, w, bias=self.bias)
@@ -366,8 +562,7 @@ class QuantAct_bert(Module):
                                               self.x_min, self.x_max)
             elif self.quant_mode == "symmetric":
                 magnitude = max(abs(self.x_min), abs(self.x_max))
-                quant_act = self.act_function(x, self.activation_bit,
-                                              magnitude)
+                quant_act = self.act_function(x, self.activation_bit, magnitude)
             return quant_act
         else:
             return x

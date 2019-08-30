@@ -18,7 +18,7 @@ def add_poweriter_arguments(parser):
     parser.add_argument(
         '--relative_tolerance',
         type=float,
-        default=1e-4,
+        default=1e-2,
         metavar='float',
         help='Relative tolerance for stopping power iteration (default: 1e-4)')
     parser.add_argument(
@@ -302,7 +302,7 @@ def power_iteration(train_dataloader, model, get_loss, args, device):
 
         lambda_old, lambdas = 0., 1.
         i = 0
-        while (abs((lambdas - lambda_old) / lambdas) >= 0.0001):
+        while (abs((lambdas - lambda_old) / lambdas) >= 0.01):
 
             lambda_old = lambdas
 
@@ -382,7 +382,7 @@ def power_iteration_eigenvecs(train_dataloader, model, get_loss, args, device):
 
             lambda_old, lambdas = 0., 1.
             i = 0
-            while (abs((lambdas - lambda_old) / lambdas) >= 0.0001):
+            while (abs((lambdas - lambda_old) / lambdas) >= 0.01):
 
                 lambda_old = lambdas
 
@@ -424,6 +424,7 @@ def power_iteration_eigenvecs(train_dataloader, model, get_loss, args, device):
                 i += 1
             vs.append(v)
             lambdass.append(lambdas)
+            break
         return vs, lambdass
 
     v1, lambdas1 = get_eigens()
@@ -442,7 +443,7 @@ def power_iteration_eigenvecs(train_dataloader, model, get_loss, args, device):
 
         lambda_old, lambdas = 0., 1.
         i = 0
-        while (abs((lambdas - lambda_old) / lambdas) >= 0.0001):
+        while (abs((lambdas - lambda_old) / lambdas) >= 0.01):
 
             lambda_old = lambdas
 
@@ -486,6 +487,7 @@ def power_iteration_eigenvecs(train_dataloader, model, get_loss, args, device):
 
         vs.append(v)
         lambdass.append(lambdas)
+        break
     v2, lambdas2 = vs, lambdass
     landscape_data = {
         'v1': v1,
