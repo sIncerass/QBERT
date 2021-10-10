@@ -1,6 +1,6 @@
-# NLP-quantization
+# Q-BERT: Hessian-based Quantization of BERT
 
-This repo is based on [pytorch-pretrained-BERT](https://github.com/huggingface/pytorch-pretrained-BERT) and [pytorch-hessian-eigenthings](https://github.com/noahgolmant/pytorch-hessian-eigenthings).
+This repo is an implementation of [Q-BERT (AAAI 2020)](https://ojs.aaai.org/index.php/AAAI/article/view/6409) based on [pytorch-pretrained-BERT](https://github.com/huggingface/pytorch-pretrained-BERT) and [pytorch-hessian-eigenthings](https://github.com/noahgolmant/pytorch-hessian-eigenthings).
 
 
 ## Installation
